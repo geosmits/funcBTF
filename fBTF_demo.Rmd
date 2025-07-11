@@ -1,0 +1,174 @@
+---
+title: "fBTF demo"
+author: "Georgia Smits"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+
+## To install dsp and dspCP, run the below 
+# library(devtools)
+# devtools::install_github("drkowal/dsp")
+# devtools::install_github("haoxuanwu/dspCP")
+
+library(dsp)
+library(dspCP)
+library(segmented)
+
+code.path <- "~/Desktop/changepoint/funcBTF" # or wherever you have this repo cloned
+plot.path <- "~/Desktop/changepoint/funcBTF/plots" # or wherever you have this repo cloned
+
+set.seed(2025)
+```
+
+## Plant Data
+
+```{r}
+data("plant")
+
+x.KW = plant$time[plant$group == 'RKW']
+y.KW = plant$y[plant$group == 'RKW']
+x.WC = plant$time[plant$group == 'RWC']
+y.WC = plant$y[plant$group == 'RWC']
+x.KV = plant$time[plant$group == 'RKV']
+y.KV = plant$y[plant$group == 'RKV']
+
+# plot
+pdf(file.path(plot.path, "plant_KV_plot.pdf"), width = 8, height = 4)
+par(mfrow = c(1, 1), mar = c(5.1, 5.1, 4.1, 2.1))
+plot(x.KV, y.KV, xlab = "time.KV", ylab = "Effect of time.KV",
+     cex.lab = 2, cex.axis = 2,
+     main = "Unevenly spaced data points", cex.main = 2)
+par(mfrow = c(1, 1), mar = c(5.1, 4.1, 4.1, 2.1))
+dev.off()
+```
+
+## Segmented
+
+```{r}
+attach(plant)
+X <- model.matrix(~0+group)*time
+time.KV <- X[,1]
+time.KW <- X[,2]
+time.WC <- X[,3]
+neg.time.KW <- -time.KW
+olm1 <- lm(y~0+group+time.KV+time.WC)
+os1 <- segmented(olm1, seg.Z = ~time.KV+time.WC+neg.time.KW,
+                 psi = list(time.KV = c(300,450),
+                            neg.time.KW = c(-600,-450),
+                            time.WC = c(300,450)))
+
+const.KV<-coef(os1)["groupRKV"]-
+  coef(os1)["U1.neg.time.KW"]*
+  os1$psi["psi1.neg.time.KW","Est."]-
+  coef(os1)["U2.neg.time.KW"]*
+  os1$psi["psi2.neg.time.KW","Est."]
+
+# plot
+pdf(file.path(plot.path, "plant_KV_segmented.pdf"), width = 8, height = 4)
+par(mfrow = c(1, 1), mar = c(5.1, 5.1, 4.1, 2.1))
+plot(x.KV, y.KV, xlab = "time.KV", ylab = "Effect of time.KV",
+     cex.lab = 2, cex.axis = 2,
+     main = "Broken-line model", cex.main = 2)
+plot(os1, "time.KV", add = TRUE, const = const.KV)
+# abline(v = os1$psi[grepl("KV", rownames(os1$psi), fixed = TRUE), "Est."])
+par(mfrow = c(1, 1), mar = c(5.1, 4.1, 4.1, 2.1))
+dev.off()
+```
+
+## DSP Baseline 1
+
+Dynamic Shrinkage Processes applied directly to data, ignoring uneven spacing
+
+```{r}
+y.KV_norm <- y.KV/sqrt(var(y.KV))
+fit_dsp_base1 <- dsp::btf(y.KV_norm, D = 2, nburn = 3000, verbose = FALSE,
+                          mcmc_params = list("mu", "yhat", "omega", "r"))
+```
+
+```{r}
+pdf(file.path(plot.path, "plant_KV_naiveDSP.pdf"), width = 8, height = 4)
+par(mfrow = c(1, 1), mar = c(5.1, 5.1, 4.1, 2.1))
+plot(x.KV, y.KV, xlab = "time.KV", ylab = "Effect of time.KV",
+     cex.lab = 2, cex.axis = 2,
+     main = "Baseline 1: DSP Applied Directly", cex.main = 2)
+lines(x.KV, colMeans(fit_dsp_base1$mu)*sqrt(var(y.KV)),
+      type = "l", col = "red")
+par(mfrow = c(1, 1), mar = c(5.1, 4.1, 4.1, 2.1))
+dev.off()
+```
+
+## DSP Baseline 2
+
+Interpolate data linearly to create evenly spaced grid, apply DSP
+
+```{r}
+t_grid <- seq(from = min(x.KV), to = max(x.KV), length.out = length(x.KV))
+y.KV_interp <- approx(x = x.KV, y = y.KV, xout = t_grid)$y
+
+y.KV_interp_norm <- y.KV_interp/sqrt(var(y.KV_interp))
+```
+
+```{r}
+fit_dsp_base2 <- dsp::btf(y.KV_interp_norm, D = 2, nburn = 3000, verbose = FALSE,
+                          mcmc_params = list("mu", "yhat", "omega", "r"))
+```
+
+```{r}
+pdf(file.path(plot.path, "plant_KV_interpDSP.pdf"), width = 8, height = 4)
+par(mfrow = c(1, 1), mar = c(5.1, 5.1, 4.1, 2.1))
+plot(x.KV, y.KV, xlab = "time.KV", ylab = "Effect of time.KV",
+     cex.lab = 2, cex.axis = 2,
+     main = "Baseline 2: DSP Applied to Interpolated Grid", cex.main = 2)
+lines(t_grid, colMeans(fit_dsp_base2$mu)*sqrt(var(y.KV_interp)), type = "l", col = "red")
+par(mfrow = c(1, 1), mar = c(5.1, 4.1, 4.1, 2.1))
+dev.off()
+```
+
+## Functional BTF
+
+```{r}
+source(file.path(code.path, "fBTF_funcs.R"))
+```
+
+```{r}
+fit_fbtf_D1 <- fbtf(y_k = y.KV_norm, t_k = x.KV, D = 1, # verbose = FALSE,
+                    # mcmc_params = list("mu", "yhat", "omega", "r"),
+                    nburn = 3000)
+```
+
+```{r}
+pdf(file.path(plot.path, "plant_KV_fBTF_D1.pdf"), width = 8, height = 4)
+par(mfrow = c(1, 1), mar = c(5.1, 5.1, 4.1, 2.1))
+plot(x.KV, y.KV, xlab = "time.KV", ylab = "Effect of time.KV",
+     cex.lab = 2, cex.axis = 2,
+     main = "Functional BTF D = 1", cex.main = 2)
+lines(fit_fbtf_D1$t, colMeans(fit_fbtf_D1$mu)*sqrt(var(y.KV)), type = "l", col = "red")
+par(mfrow = c(1, 1), mar = c(5.1, 4.1, 4.1, 2.1))
+dev.off()
+```
+
+```{r}
+fit_fbtf_D2 <- fbtf(y_k = y.KV_norm, t_k = x.KV, D = 2, # verbose = FALSE,
+                    # mcmc_params = list("mu", "yhat", "omega", "r"),
+                    nburn = 3000)
+```
+
+```{r}
+pdf(file.path(plot.path, "plant_KV_fBTF_D2.pdf"), width = 8, height = 4)
+par(mfrow = c(1, 1), mar = c(5.1, 5.1, 4.1, 2.1))
+plot(x.KV, y.KV, xlab = "time.KV", ylab = "Effect of time.KV",
+     cex.lab = 2, cex.axis = 2,
+     main = "Functional BTF D = 2", cex.main = 2)
+lines(fit_fbtf_D2$t, colMeans(fit_fbtf_D2$mu)*sqrt(var(y.KV)), type = "l", col = "red")
+par(mfrow = c(1, 1), mar = c(5.1, 4.1, 4.1, 2.1))
+dev.off()
+```
+
+
+
+
+
+
